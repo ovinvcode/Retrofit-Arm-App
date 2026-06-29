@@ -3,8 +3,11 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 import 'react-native-reanimated';
+
+import { useAppStore } from '@/store/useAppStore';
 
 import { useColorScheme } from '@/components/useColorScheme';
 
@@ -41,6 +44,25 @@ export default function RootLayout() {
   if (!loaded) {
     return null;
   }
+
+  // AppState connection lifecycle manager
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      const { connectToDevice, disconnectDevice, deviceIp } = useAppStore.getState();
+      
+      if (nextAppState === 'active') {
+        console.log('App active - reconnecting to ESP32');
+        connectToDevice(deviceIp);
+      } else if (nextAppState === 'background' || nextAppState === 'inactive') {
+        console.log('App backgrounding - disconnecting ESP32');
+        disconnectDevice();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
 
   return <RootLayoutNav />;
 }

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { StyleSheet, View, Text, ScrollView, TouchableOpacity } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { router } from 'expo-router';
+import { useAppStore } from '@/store/useAppStore';
 
 // Mock data for switches
 const MOCK_SWITCHES = [
@@ -10,24 +11,11 @@ const MOCK_SWITCHES = [
   { id: '3', name: 'Kitchen AC', room: 'Kitchen' },
 ];
 
-// Mock data for paired devices
-const MOCK_DEVICES = [
-  { id: 'd1', switchName: 'Switch 2', room: 'Living Room', status: 'active' },
-  { id: 'd2', switchName: 'Switch 1', room: 'Kitchen', status: 'disconnected' },
-];
+// Mock data for paired devices removed - using global connection state
 
 export default function ManagerScreen() {
   const [switches] = useState(MOCK_SWITCHES);
-  const [devices] = useState(MOCK_DEVICES);
-
-  // Group devices by room
-  const groupedDevices = devices.reduce((acc, device) => {
-    if (!acc[device.room]) {
-      acc[device.room] = [];
-    }
-    acc[device.room].push(device);
-    return acc;
-  }, {} as Record<string, typeof devices>);
+  const { connectionStatus, deviceIp, connectToDevice, disconnectDevice } = useAppStore();
 
   return (
     <View style={styles.container}>
@@ -74,43 +62,54 @@ export default function ManagerScreen() {
         {/* Device Manager Section */}
         <View style={styles.section}>
           <View style={styles.deviceHeaderRow}>
-            <Text style={styles.sectionHeader}>Devices</Text>
-            <TouchableOpacity style={styles.smallAddButton}>
-              <FontAwesome name="plus" size={14} color="#0A84FF" />
-              <Text style={styles.smallAddButtonText}>Add</Text>
-            </TouchableOpacity>
+            <Text style={styles.sectionHeader}>Robot Arm</Text>
           </View>
 
-          {Object.entries(groupedDevices).map(([room, roomDevices]) => (
-            <View key={room} style={styles.roomGroup}>
-              <Text style={styles.roomGroupName}>{room}</Text>
-              
-              {roomDevices.map(device => (
-                <View 
-                  key={device.id} 
-                  style={[
-                    styles.deviceCard,
-                    device.status === 'active' ? styles.deviceCardActive : styles.deviceCardInactive
-                  ]}
-                >
-                  <Text style={styles.deviceSwitchName}>{device.switchName}</Text>
-                  
-                  <View style={[
-                    styles.statusBadge, 
-                    device.status === 'active' ? styles.statusBadgeActive : styles.statusBadgeInactive
-                  ]}>
-                    <Text style={[
-                      styles.statusBadgeText,
-                      device.status === 'active' ? styles.statusBadgeTextActive : styles.statusBadgeTextInactive
-                    ]}>
-                      {device.status}
-                    </Text>
-                  </View>
-                </View>
-              ))}
+          <View style={[
+            styles.deviceCard,
+            connectionStatus === 'connected' ? styles.deviceCardActive : styles.deviceCardInactive
+          ]}>
+            <View>
+              <Text style={styles.deviceSwitchName}>5-Bar Linkage Arm</Text>
+              <Text style={styles.listItemSubtitle}>IP: {deviceIp}</Text>
             </View>
-          ))}
-          
+            
+            <View style={[
+              styles.statusBadge, 
+              connectionStatus === 'connected' ? styles.statusBadgeActive : styles.statusBadgeInactive
+            ]}>
+              <Text style={[
+                styles.statusBadgeText,
+                connectionStatus === 'connected' ? styles.statusBadgeTextActive : styles.statusBadgeTextInactive
+              ]}>
+                {connectionStatus.toUpperCase()}
+              </Text>
+            </View>
+          </View>
+
+          <TouchableOpacity 
+            style={[
+              styles.addButton, 
+              { marginTop: 10, backgroundColor: connectionStatus === 'connected' ? '#ff3b30' : '#34C759', borderColor: 'transparent' }
+            ]}
+            onPress={() => {
+              if (connectionStatus === 'connected') {
+                disconnectDevice();
+              } else {
+                connectToDevice(deviceIp);
+              }
+            }}
+          >
+            <FontAwesome 
+              name={connectionStatus === 'connected' ? 'power-off' : 'link'} 
+              size={20} 
+              color="#FFF" 
+              style={styles.addButtonIcon} 
+            />
+            <Text style={[styles.addButtonText, { color: '#FFF' }]}>
+              {connectionStatus === 'connected' ? 'Disconnect' : 'Connect'}
+            </Text>
+          </TouchableOpacity>
         </View>
 
       </ScrollView>

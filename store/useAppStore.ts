@@ -31,9 +31,17 @@ interface AppState {
   addDevice: (device: Device) => void;
   addSchedule: (schedule: Schedule) => void;
   deleteSchedule: (id: string) => void;
+  
+  // WebSocket Connection State
+  connectionStatus: 'disconnected' | 'connecting' | 'connected';
+  deviceIp: string;
+  wsConnection: WebSocket | null;
+  connectToDevice: (ip: string) => void;
+  disconnectDevice: () => void;
+  sendDeviceCommand: (command: object) => void;
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   rooms: ['Bedroom', 'Living Room', 'Kitchen'],
   currentRoom: 'Bedroom',
   devices: [
@@ -119,4 +127,48 @@ export const useAppStore = create<AppState>((set) => ({
   addDevice: (device) => set((state) => ({ devices: [...state.devices, device] })),
   addSchedule: (schedule) => set((state) => ({ schedules: [...state.schedules, schedule] })),
   deleteSchedule: (id) => set((state) => ({ schedules: state.schedules.filter(s => s.id !== id) })),
+
+  // WebSocket Connection Implementation
+  connectionStatus: 'disconnected',
+  deviceIp: '192.168.4.1',
+  wsConnection: null,
+
+  connectToDevice: (ip) => {
+    const ws = new WebSocket(`ws://${ip}:81`);
+    set({ connectionStatus: 'connecting', deviceIp: ip, wsConnection: ws });
+
+    ws.onopen = () => {
+      set({ connectionStatus: 'connected' });
+      console.log('Connected to ESP32');
+    };
+
+    ws.onmessage = (e) => {
+      console.log('Received: ', e.data);
+    };
+
+    ws.onclose = () => {
+      set({ connectionStatus: 'disconnected', wsConnection: null });
+      console.log('Disconnected from ESP32');
+    };
+
+    ws.onerror = (e) => {
+      console.log('WebSocket Error: ', e.message);
+      set({ connectionStatus: 'disconnected', wsConnection: null });
+    };
+  },
+
+  disconnectDevice: () => {
+    const { wsConnection, connectionStatus } = get();
+    if (wsConnection && connectionStatus === 'connected') {
+      wsConnection.send(JSON.stringify({ command: 'SLEEP' }));
+      wsConnection.close();
+    }
+  },
+
+  sendDeviceCommand: (command) => {
+    const { wsConnection, connectionStatus } = get();
+    if (wsConnection && connectionStatus === 'connected') {
+      wsConnection.send(JSON.stringify(command));
+    }
+  }
 }));
