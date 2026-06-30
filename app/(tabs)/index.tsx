@@ -1,4 +1,4 @@
-import { StyleSheet, View, Text, ScrollView, TouchableOpacity } from 'react-native';
+import { StyleSheet, View, Text, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { useState, useEffect } from 'react';
 
 import { useAppStore } from '@/store/useAppStore';
@@ -7,32 +7,77 @@ import { FontAwesome } from '@expo/vector-icons';
 import { NeumorphicButton } from '@/components/NeumorphicButton';
 
 export default function HomeScreen() {
-  const { devices, updateDeviceStatus, rooms, currentRoom, setCurrentRoom } = useAppStore();
+  const { 
+    devices, 
+    rooms, 
+    currentRoom, 
+    setCurrentRoom, 
+    connectionStatus, 
+    robotStatus,
+    isHomed 
+  } = useAppStore();
 
-  const [connectionStatus, setConnectionStatus] = useState('Connecting...');
   const [loadingDevices, setLoadingDevices] = useState<Record<string, boolean>>({});
+  const [lastStatuses, setLastStatuses] = useState<Record<string, 'on' | 'off'>>({});
 
   useEffect(() => {
-    let mounted = true;
-    HardwareService.connect().then(() => {
-      if (mounted) setConnectionStatus('Ready');
-    });
-    return () => { mounted = false; };
+    // Automatically connect on mount
+    HardwareService.connect();
   }, []);
 
+  // Self-healing: clear loading indicators when switch status updates in the store
+  useEffect(() => {
+    setLoadingDevices((prevLoading) => {
+      const nextLoading = { ...prevLoading };
+      let modified = false;
+
+      devices.forEach((d) => {
+        if (nextLoading[d.id] && lastStatuses[d.id] !== d.status) {
+          nextLoading[d.id] = false;
+          modified = true;
+        }
+      });
+
+      return modified ? nextLoading : prevLoading;
+    });
+
+    // Keep track of the last known statuses
+    const newStatuses = devices.reduce((acc, d) => {
+      acc[d.id] = d.status;
+      return acc;
+    }, {} as Record<string, 'on' | 'off'>);
+    setLastStatuses(newStatuses);
+  }, [devices]);
+
   const toggleDevice = async (id: string, currentStatus: 'on' | 'off') => {
+    if (connectionStatus !== 'connected') {
+      Alert.alert('Not Connected', 'Please connect to the Robot Arm in the Manager tab.');
+      return;
+    }
+    if (!isHomed) {
+      Alert.alert(
+        'Homing Required',
+        'The arm needs to be homed first. Would you like to home it now?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Home Arm', onPress: () => HardwareService.homeArm() }
+        ]
+      );
+      return;
+    }
+
     const newStatus = currentStatus === 'on' ? 'off' : 'on';
     setLoadingDevices((prev) => ({ ...prev, [id]: true }));
-    setConnectionStatus('Moving');
     
     try {
-      await HardwareService.triggerSwitch(id, newStatus);
-      updateDeviceStatus(id, newStatus);
+      const res = await HardwareService.triggerSwitch(id, newStatus);
+      if (!res.success) {
+        setLoadingDevices((prev) => ({ ...prev, [id]: false }));
+        Alert.alert('Error', res.message);
+      }
     } catch (e) {
       console.error(e);
-    } finally {
       setLoadingDevices((prev) => ({ ...prev, [id]: false }));
-      setConnectionStatus('Ready');
     }
   };
 
@@ -59,6 +104,20 @@ export default function HomeScreen() {
     return 'power-off';
   };
 
+  const getStatusColor = () => {
+    if (connectionStatus === 'disconnected') return '#FF3B30';
+    if (connectionStatus === 'connecting') return '#FF9F0A';
+    if (robotStatus.toLowerCase().includes('error')) return '#FF3B30';
+    if (robotStatus === 'Ready' || robotStatus === 'Homed / Ready') return '#34C759';
+    return '#FF9F0A';
+  };
+
+  const getStatusText = () => {
+    if (connectionStatus === 'disconnected') return 'Offline';
+    if (connectionStatus === 'connecting') return 'Connecting...';
+    return robotStatus;
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -67,10 +126,10 @@ export default function HomeScreen() {
           <FontAwesome 
             name="circle" 
             size={12} 
-            color={connectionStatus === 'Ready' ? '#34C759' : '#FF9F0A'} 
+            color={getStatusColor()} 
             style={styles.statusIcon} 
           />
-          <Text style={styles.statusText}>Status: {connectionStatus}</Text>
+          <Text style={styles.statusText}>Status: {getStatusText()}</Text>
         </View>
       </View>
 

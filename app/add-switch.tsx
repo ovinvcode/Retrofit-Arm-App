@@ -1,4 +1,4 @@
-import { StyleSheet, View, Text, TouchableOpacity, TextInput, ActivityIndicator, ScrollView, Alert, KeyboardAvoidingView, Platform } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, TextInput, ActivityIndicator, ScrollView, Alert, KeyboardAvoidingView, Platform, Modal } from 'react-native';
 import { useState } from 'react';
 import { useAppStore } from '@/store/useAppStore';
 import { HardwareService } from '@/services/HardwareService';
@@ -8,21 +8,26 @@ type WizardStep = 'SETUP' | 'MAPPING' | 'REVIEW';
 
 type DraftSwitch = {
   name: string;
-  x_coord: number;
-  y_coord: number;
+  placeholder?: string;
+  on_x: number;
+  on_y: number;
+  off_x: number;
+  off_y: number;
   skipped: boolean;
 };
 
 export default function MapScreen() {
-  const { rooms, addDevice } = useAppStore();
+  const { rooms, addDevice, connectionStatus, sendDeviceCommand } = useAppStore();
 
   // Navigation State
   const [step, setStep] = useState<WizardStep>('SETUP');
+  const [isCatalogFlow, setIsCatalogFlow] = useState(false);
 
   // Phase 1: Setup State
   const [panelName, setPanelName] = useState('');
   const [selectedRoom, setSelectedRoom] = useState(rooms[0] || '');
   const [switchCount, setSwitchCount] = useState(1);
+  const [catalogModalVisible, setCatalogModalVisible] = useState(false);
 
   // Phase 2: Mapping State
   const [draftSwitches, setDraftSwitches] = useState<DraftSwitch[]>([]);
@@ -37,8 +42,24 @@ export default function MapScreen() {
 
   // Hardware Controls
   const jog = (axis: 'x' | 'y', amount: number) => {
-    if (axis === 'x') setX(prev => prev + amount);
-    if (axis === 'y') setY(prev => prev + amount);
+    let nextX = x;
+    let nextY = y;
+    if (axis === 'x') {
+      nextX = x + amount;
+      setX(nextX);
+    }
+    if (axis === 'y') {
+      nextY = y + amount;
+      setY(nextY);
+    }
+
+    if (connectionStatus === 'connected') {
+      sendDeviceCommand({
+        cmd: 'goto',
+        x: nextX,
+        y: nextY
+      });
+    }
   };
 
   const homeArm = async () => {
@@ -64,17 +85,32 @@ export default function MapScreen() {
     
     setCurrentIndex(0);
     setCurrentSwitchName(truncatedDrafts[0]?.name || `Switch 1`);
-    setX(truncatedDrafts[0]?.x_coord || 0);
-    setY(truncatedDrafts[0]?.y_coord || 0);
+    setX(truncatedDrafts[0]?.on_x || 0);
+    setY(truncatedDrafts[0]?.on_y || 0);
     setTestComplete(false);
+    setIsCatalogFlow(false);
     setStep('MAPPING');
   };
 
   const testPress = async () => {
     setTesting(true);
     try {
-      // Simulate moving to X,Y and physically pressing the switch
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      if (connectionStatus === 'connected') {
+        // First move the arm to the target coordinates
+        sendDeviceCommand({
+          cmd: 'goto',
+          x,
+          y
+        });
+        // Wait 1.5 seconds for mechanical arm movement before firing the actuator
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        sendDeviceCommand({
+          cmd: 'fire'
+        });
+      } else {
+        // Simulate local offline delay
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      }
       setTestComplete(true);
     } catch(e) {
       console.error(e);
@@ -87,8 +123,10 @@ export default function MapScreen() {
   const saveCurrentSwitch = () => {
     const newDraft = { 
       name: currentSwitchName.trim() || `Switch ${currentIndex + 1}`, 
-      x_coord: x, 
-      y_coord: y, 
+      on_x: x, 
+      on_y: y + 5, // Simple offset for custom map
+      off_x: x,
+      off_y: y - 5,
       skipped: false 
     };
     const newDrafts = [...draftSwitches];
@@ -105,8 +143,10 @@ export default function MapScreen() {
   const skipCurrentSwitch = () => {
     const newDraft = { 
       name: `Skipped ${currentIndex + 1}`, 
-      x_coord: 0, 
-      y_coord: 0, 
+      on_x: 0, 
+      on_y: 0, 
+      off_x: 0, 
+      off_y: 0, 
       skipped: true 
     };
     const newDrafts = [...draftSwitches];
@@ -122,8 +162,8 @@ export default function MapScreen() {
     } else {
       setCurrentIndex(nextIndex);
       setCurrentSwitchName(draftSwitches[nextIndex]?.name || `Switch ${nextIndex + 1}`);
-      setX(draftSwitches[nextIndex]?.x_coord || 0);
-      setY(draftSwitches[nextIndex]?.y_coord || 0);
+      setX(draftSwitches[nextIndex]?.on_x || 0);
+      setY(draftSwitches[nextIndex]?.on_y || 0);
     }
   };
 
@@ -136,13 +176,17 @@ export default function MapScreen() {
 
   const handleBack = () => {
     if (step === 'REVIEW') {
-      setStep('MAPPING');
-      const prevIndex = switchCount - 1;
-      setCurrentIndex(prevIndex);
-      setCurrentSwitchName(draftSwitches[prevIndex]?.name || `Switch ${prevIndex + 1}`);
-      setX(draftSwitches[prevIndex]?.x_coord || 0);
-      setY(draftSwitches[prevIndex]?.y_coord || 0);
-      setTestComplete(false);
+      if (isCatalogFlow) {
+        setStep('SETUP');
+      } else {
+        setStep('MAPPING');
+        const prevIndex = switchCount - 1;
+        setCurrentIndex(prevIndex);
+        setCurrentSwitchName(draftSwitches[prevIndex]?.name || `Switch ${prevIndex + 1}`);
+        setX(draftSwitches[prevIndex]?.on_x || 0);
+        setY(draftSwitches[prevIndex]?.on_y || 0);
+        setTestComplete(false);
+      }
     } else if (step === 'MAPPING') {
       if (currentIndex === 0) {
         setStep('SETUP');
@@ -150,14 +194,20 @@ export default function MapScreen() {
         const prevIndex = currentIndex - 1;
         setCurrentIndex(prevIndex);
         setCurrentSwitchName(draftSwitches[prevIndex]?.name || `Switch ${prevIndex + 1}`);
-        setX(draftSwitches[prevIndex]?.x_coord || 0);
-        setY(draftSwitches[prevIndex]?.y_coord || 0);
+        setX(draftSwitches[prevIndex]?.on_x || 0);
+        setY(draftSwitches[prevIndex]?.on_y || 0);
         setTestComplete(false);
       }
     }
   };
 
   const saveAll = () => {
+    const unassigned = draftSwitches.find(d => !d.skipped && d.name.trim() === '');
+    if (unassigned) {
+      Alert.alert('Missing Info', 'Please assign a name to all buttons or disable them.');
+      return;
+    }
+
     let savedCount = 0;
     draftSwitches.forEach((draft) => {
       if (!draft.skipped) {
@@ -167,8 +217,10 @@ export default function MapScreen() {
           group: panelName.trim(),
           switch_name: draft.name,
           status: 'off',
-          x_coord: draft.x_coord,
-          y_coord: draft.y_coord,
+          on_x: draft.on_x,
+          on_y: draft.on_y,
+          off_x: draft.off_x,
+          off_y: draft.off_y,
           z_coord: 0,
         });
         savedCount++;
@@ -233,11 +285,275 @@ export default function MapScreen() {
         </View>
       </View>
 
-      <TouchableOpacity style={styles.primaryBtn} onPress={startMapping}>
-        <Text style={styles.primaryBtnText}>Start Mapping ({switchCount})</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: 'row', gap: 10, marginTop: 20 }}>
+        <TouchableOpacity style={styles.primaryBtnFlex} onPress={startMapping}>
+          <Text style={styles.primaryBtnText}>Start Mapping ({switchCount})</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.secondaryBtn} onPress={() => {
+          if (!panelName.trim()) {
+            Alert.alert('Missing Info', 'Please enter a Panel Name before opening catalog.');
+            return;
+          }
+          setCatalogModalVisible(true);
+        }}>
+          <Text style={styles.secondaryBtnText}>Catalog</Text>
+        </TouchableOpacity>
+      </View>
+
+      <Modal
+        visible={catalogModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setCatalogModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Standard Layouts</Text>
+            <Text style={styles.modalSubtitle}>Choose a predefined layout for {switchCount} buttons</Text>
+
+            <ScrollView style={{ width: '100%', marginBottom: 20 }}>
+              {switchCount === 5 && (
+                <>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('5_quincunx')}>
+                    <View style={styles.miniPreview}>
+                      <View style={[styles.miniBtn, { top: 4, left: 4 }]} />
+                      <View style={[styles.miniBtn, { top: 4, right: 4 }]} />
+                      <View style={[styles.miniBtn, { top: 16, left: 16 }]} />
+                      <View style={[styles.miniBtn, { bottom: 4, left: 4 }]} />
+                      <View style={[styles.miniBtn, { bottom: 4, right: 4 }]} />
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Quincunx (Dice)</Text>
+                    <Text style={styles.catalogItemDesc}>5 buttons in dice pattern</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('5_horizontal')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2,3,4,5].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Linear Horizontal</Text>
+                    <Text style={styles.catalogItemDesc}>5 buttons side-by-side</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('5_vertical')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'column', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2,3,4,5].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Linear Vertical</Text>
+                    <Text style={styles.catalogItemDesc}>5 buttons stacked</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              {switchCount === 4 && (
+                <>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('4_square')}>
+                    <View style={styles.miniPreview}>
+                      <View style={[styles.miniBtn, { top: 6, left: 6 }]} />
+                      <View style={[styles.miniBtn, { top: 6, right: 6 }]} />
+                      <View style={[styles.miniBtn, { bottom: 6, left: 6 }]} />
+                      <View style={[styles.miniBtn, { bottom: 6, right: 6 }]} />
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Square 2x2</Text>
+                    <Text style={styles.catalogItemDesc}>4 buttons in a square</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('4_horizontal')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2,3,4].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Linear Horizontal</Text>
+                    <Text style={styles.catalogItemDesc}>4 buttons side-by-side</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('4_vertical')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'column', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2,3,4].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Linear Vertical</Text>
+                    <Text style={styles.catalogItemDesc}>4 buttons stacked</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              {switchCount === 3 && (
+                <>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('3_triangle')}>
+                    <View style={styles.miniPreview}>
+                      <View style={[styles.miniBtn, { top: 6, left: 16 }]} />
+                      <View style={[styles.miniBtn, { bottom: 6, left: 6 }]} />
+                      <View style={[styles.miniBtn, { bottom: 6, right: 6 }]} />
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Triangle</Text>
+                    <Text style={styles.catalogItemDesc}>1 top, 2 bottom</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('3_inverse_triangle')}>
+                    <View style={styles.miniPreview}>
+                      <View style={[styles.miniBtn, { top: 6, left: 6 }]} />
+                      <View style={[styles.miniBtn, { top: 6, right: 6 }]} />
+                      <View style={[styles.miniBtn, { bottom: 6, left: 16 }]} />
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Inverse Triangle</Text>
+                    <Text style={styles.catalogItemDesc}>2 top, 1 bottom</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('3_horizontal')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2,3].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Linear Horizontal</Text>
+                    <Text style={styles.catalogItemDesc}>3 buttons side-by-side</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('3_vertical')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'column', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2,3].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Linear Vertical</Text>
+                    <Text style={styles.catalogItemDesc}>3 buttons stacked</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              {switchCount === 2 && (
+                <>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('2_horizontal')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'row', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Horizontal Compact</Text>
+                    <Text style={styles.catalogItemDesc}>2 buttons side-by-side</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('2_vertical')}>
+                    <View style={[styles.miniPreview, { flexDirection: 'column', justifyContent: 'space-evenly', alignItems: 'center' }]}>
+                      {[1,2].map(i => <View key={i} style={styles.miniBtnInline} />)}
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Vertical Compact</Text>
+                    <Text style={styles.catalogItemDesc}>2 buttons stacked</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+              {switchCount === 1 && (
+                  <TouchableOpacity style={styles.catalogItem} onPress={() => applyStandardLayout('1_single')}>
+                    <View style={[styles.miniPreview, { justifyContent: 'center', alignItems: 'center' }]}>
+                      <View style={styles.miniBtnInline} />
+                    </View>
+                    <Text style={styles.catalogItemTitle}>Single Standard</Text>
+                    <Text style={styles.catalogItemDesc}>1 center button</Text>
+                  </TouchableOpacity>
+              )}
+              {switchCount > 5 && (
+                <Text style={{ textAlign: 'center', color: '#A3B1C6' }}>No standard layouts for {switchCount} buttons</Text>
+              )}
+            </ScrollView>
+
+            <TouchableOpacity style={styles.secondaryBtn} onPress={() => setCatalogModalVisible(false)}>
+              <Text style={styles.secondaryBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
+
+  const applyStandardLayout = (type: string) => {
+    let newDrafts: DraftSwitch[] = [];
+    
+    switch (type) {
+      case '5_quincunx':
+        newDrafts = [
+          { name: '1 (Top Left)', on_x: -22, on_y: 27, off_x: -22, off_y: 17, skipped: false },
+          { name: '2 (Top Right)', on_x: 22, on_y: 27, off_x: 22, off_y: 17, skipped: false },
+          { name: '3 (Center)', on_x: 0, on_y: 5, off_x: 0, off_y: -5, skipped: false },
+          { name: '4 (Bottom Left)', on_x: -22, on_y: -17, off_x: -22, off_y: -27, skipped: false },
+          { name: '5 (Bottom Right)', on_x: 22, on_y: -17, off_x: 22, off_y: -27, skipped: false }
+        ];
+        break;
+      case '5_horizontal':
+        newDrafts = [
+          { name: '1 (Far Left)', on_x: -92, on_y: 8, off_x: -92, off_y: -8, skipped: false },
+          { name: '2 (Mid Left)', on_x: -46, on_y: 8, off_x: -46, off_y: -8, skipped: false },
+          { name: '3 (Center)', on_x: 0, on_y: 8, off_x: 0, off_y: -8, skipped: false },
+          { name: '4 (Mid Right)', on_x: 46, on_y: 8, off_x: 46, off_y: -8, skipped: false },
+          { name: '5 (Far Right)', on_x: 92, on_y: 8, off_x: 92, off_y: -8, skipped: false }
+        ];
+        break;
+      case '5_vertical':
+        newDrafts = [
+          { name: '1 (Top)', on_x: 0, on_y: 100, off_x: 0, off_y: 84, skipped: false },
+          { name: '2 (Upper Mid)', on_x: 0, on_y: 54, off_x: 0, off_y: 38, skipped: false },
+          { name: '3 (Center)', on_x: 0, on_y: 8, off_x: 0, off_y: -8, skipped: false },
+          { name: '4 (Lower Mid)', on_x: 0, on_y: -38, off_x: 0, off_y: -54, skipped: false },
+          { name: '5 (Bottom)', on_x: 0, on_y: -84, off_x: 0, off_y: -100, skipped: false }
+        ];
+        break;
+      case '4_square':
+        newDrafts = [
+          { name: '1 (Top Left)', on_x: -22, on_y: 27, off_x: -22, off_y: 17, skipped: false },
+          { name: '2 (Top Right)', on_x: 22, on_y: 27, off_x: 22, off_y: 17, skipped: false },
+          { name: '3 (Bottom Left)', on_x: -22, on_y: -17, off_x: -22, off_y: -27, skipped: false },
+          { name: '4 (Bottom Right)', on_x: 22, on_y: -17, off_x: 22, off_y: -27, skipped: false }
+        ];
+        break;
+      case '4_horizontal':
+        newDrafts = [
+          { name: '1 (Far Left)', on_x: -69, on_y: 8, off_x: -69, off_y: -8, skipped: false },
+          { name: '2 (Mid Left)', on_x: -23, on_y: 8, off_x: -23, off_y: -8, skipped: false },
+          { name: '3 (Mid Right)', on_x: 23, on_y: 8, off_x: 23, off_y: -8, skipped: false },
+          { name: '4 (Far Right)', on_x: 69, on_y: 8, off_x: 69, off_y: -8, skipped: false }
+        ];
+        break;
+      case '4_vertical':
+        newDrafts = [
+          { name: '1 (Top)', on_x: 0, on_y: 77, off_x: 0, off_y: 61, skipped: false },
+          { name: '2 (Upper Mid)', on_x: 0, on_y: 31, off_x: 0, off_y: 15, skipped: false },
+          { name: '3 (Lower Mid)', on_x: 0, on_y: -15, off_x: 0, off_y: -31, skipped: false },
+          { name: '4 (Bottom)', on_x: 0, on_y: -61, off_x: 0, off_y: -77, skipped: false }
+        ];
+        break;
+      case '3_triangle':
+        newDrafts = [
+          { name: '1 (Top Center)', on_x: 0, on_y: 27, off_x: 0, off_y: 17, skipped: false },
+          { name: '2 (Bottom Left)', on_x: -22, on_y: -17, off_x: -22, off_y: -27, skipped: false },
+          { name: '3 (Bottom Right)', on_x: 22, on_y: -17, off_x: 22, off_y: -27, skipped: false }
+        ];
+        break;
+      case '3_inverse_triangle':
+        newDrafts = [
+          { name: '1 (Top Left)', on_x: -22, on_y: 27, off_x: -22, off_y: 17, skipped: false },
+          { name: '2 (Top Right)', on_x: 22, on_y: 27, off_x: 22, off_y: 17, skipped: false },
+          { name: '3 (Bottom Center)', on_x: 0, on_y: -17, off_x: 0, off_y: -27, skipped: false }
+        ];
+        break;
+      case '3_horizontal':
+        newDrafts = [
+          { name: '1 (Left)', on_x: -46, on_y: 8, off_x: -46, off_y: -8, skipped: false },
+          { name: '2 (Center)', on_x: 0, on_y: 8, off_x: 0, off_y: -8, skipped: false },
+          { name: '3 (Right)', on_x: 46, on_y: 8, off_x: 46, off_y: -8, skipped: false }
+        ];
+        break;
+      case '3_vertical':
+        newDrafts = [
+          { name: '1 (Top)', on_x: 0, on_y: 54, off_x: 0, off_y: 38, skipped: false },
+          { name: '2 (Center)', on_x: 0, on_y: 8, off_x: 0, off_y: -8, skipped: false },
+          { name: '3 (Bottom)', on_x: 0, on_y: -38, off_x: 0, off_y: -54, skipped: false }
+        ];
+        break;
+      case '2_horizontal':
+        newDrafts = [
+          { name: '1 (Left)', on_x: -22, on_y: 5, off_x: -22, off_y: -5, skipped: false },
+          { name: '2 (Right)', on_x: 22, on_y: 5, off_x: 22, off_y: -5, skipped: false }
+        ];
+        break;
+      case '2_vertical':
+        newDrafts = [
+          { name: '1 (Top)', on_x: 0, on_y: 27, off_x: 0, off_y: 17, skipped: false },
+          { name: '2 (Bottom)', on_x: 0, on_y: -17, off_x: 0, off_y: -27, skipped: false }
+        ];
+        break;
+      case '1_single':
+        newDrafts = [
+          { name: '1 (Center)', on_x: 0, on_y: 5, off_x: 0, off_y: -5, skipped: false }
+        ];
+        break;
+    }
+    
+    const finalDrafts = newDrafts.map(d => ({ ...d, placeholder: d.name, name: '' }));
+    setDraftSwitches(finalDrafts);
+    setCatalogModalVisible(false);
+    setIsCatalogFlow(true);
+    setStep('REVIEW');
+  };
 
   const renderMappingPhase = () => (
     <KeyboardAvoidingView 
@@ -339,6 +655,18 @@ export default function MapScreen() {
     </KeyboardAvoidingView>
   );
 
+  const updateDraftName = (index: number, newName: string) => {
+    const newDrafts = [...draftSwitches];
+    newDrafts[index].name = newName;
+    setDraftSwitches(newDrafts);
+  };
+
+  const toggleSkipDraft = (index: number) => {
+    const newDrafts = [...draftSwitches];
+    newDrafts[index].skipped = !newDrafts[index].skipped;
+    setDraftSwitches(newDrafts);
+  };
+
   const renderReviewPhase = () => (
     <ScrollView contentContainerStyle={styles.scrollContent}>
       <Text style={styles.sectionTitle}>Review & Save</Text>
@@ -347,16 +675,32 @@ export default function MapScreen() {
         <Text style={styles.reviewHeader}>{panelName} - {selectedRoom}</Text>
         
         {draftSwitches.map((draft, idx) => (
-          <View key={idx} style={styles.reviewItem}>
+          <View key={idx} style={[styles.reviewItem, draft.skipped && styles.reviewItemSkipped]}>
             <View style={styles.reviewItemLeft}>
-              <Text style={styles.reviewItemName}>{draft.name}</Text>
-              {draft.skipped ? (
-                <Text style={styles.skippedText}>Skipped</Text>
-              ) : (
-                <Text style={styles.reviewItemCoords}>X: {draft.x_coord} | Y: {draft.y_coord}</Text>
-              )}
+              <View style={styles.inputContainer}>
+                <TextInput
+                  style={[styles.reviewItemNameInput, draft.skipped && styles.skippedText]}
+                  value={draft.name}
+                  onChangeText={(text) => updateDraftName(idx, text)}
+                  editable={!draft.skipped}
+                  placeholder={draft.placeholder || "Assign a name..."}
+                  placeholderTextColor="#A3B1C6"
+                />
+                {!draft.skipped && <FontAwesome name="pencil" size={16} color="#A3B1C6" style={styles.editIcon} />}
+              </View>
+              <Text style={styles.reviewItemSubtitle}>
+                {draft.skipped ? "Unassigned (will not be saved)" : `Position ${idx + 1}`}
+              </Text>
             </View>
-            <FontAwesome name={draft.skipped ? "ban" : "check-circle"} size={24} color={draft.skipped ? "#FF3B30" : "#34C759"} />
+            <TouchableOpacity 
+              onPress={() => toggleSkipDraft(idx)} 
+              style={[styles.disableBtn, draft.skipped && styles.enableBtn]}
+            >
+              <FontAwesome name={draft.skipped ? "plus-circle" : "ban"} size={16} color={draft.skipped ? "#34C759" : "#FF3B30"} />
+              <Text style={[styles.disableBtnText, draft.skipped && styles.enableBtnText]}>
+                {draft.skipped ? "Enable" : "Disable"}
+              </Text>
+            </TouchableOpacity>
           </View>
         ))}
       </View>
@@ -575,6 +919,83 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
     fontSize: 16,
     fontWeight: 'bold',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '85%',
+    maxHeight: '80%',
+    backgroundColor: '#E0E5EC',
+    borderRadius: 20,
+    padding: 25,
+    alignItems: 'center',
+    shadowColor: '#a3b1c6',
+    shadowOffset: { width: 5, height: 5 },
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#8E8E93',
+    marginBottom: 5,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: '#A3B1C6',
+    marginBottom: 20,
+  },
+  catalogItem: {
+    backgroundColor: '#E0E5EC',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 15,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#ffffff',
+    shadowColor: '#a3b1c6',
+    shadowOffset: { width: 3, height: 3 },
+    shadowOpacity: 0.4,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  catalogItemTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#8E8E93',
+    marginTop: 10,
+  },
+  catalogItemDesc: {
+    fontSize: 14,
+    color: '#A3B1C6',
+    marginTop: 5,
+  },
+  miniPreview: {
+    width: 40,
+    height: 40,
+    backgroundColor: '#d1d9e6',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#c0c8d6',
+    position: 'relative',
+  },
+  miniBtn: {
+    position: 'absolute',
+    width: 8,
+    height: 8,
+    backgroundColor: '#0A84FF',
+    borderRadius: 2,
+  },
+  miniBtnInline: {
+    width: 6,
+    height: 6,
+    backgroundColor: '#0A84FF',
+    borderRadius: 1,
   },
   
   // Mapping Phase Styles
@@ -842,20 +1263,63 @@ const styles = StyleSheet.create({
   reviewItemLeft: {
     flex: 1,
   },
-  reviewItemName: {
-    fontSize: 16,
+  reviewItemNameInput: {
+    flex: 1,
+    fontSize: 18,
     fontWeight: 'bold',
-    color: '#8E8E93',
-    marginBottom: 4,
+    color: '#0A84FF',
+    padding: 10,
+    backgroundColor: '#E0E5EC',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#c0c8d6',
   },
-  reviewItemCoords: {
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    marginRight: 15,
+  },
+  editIcon: {
+    position: 'absolute',
+    right: 12,
+  },
+  reviewItemSubtitle: {
     fontSize: 14,
     color: '#A3B1C6',
+    marginLeft: 4,
+  },
+  reviewItemSkipped: {
+    opacity: 0.6,
   },
   skippedText: {
+    color: '#8E8E93',
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    padding: 0,
+  },
+  disableBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ffebe9',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FF3B30',
+    gap: 6,
+  },
+  enableBtn: {
+    backgroundColor: '#e6ffe6',
+    borderColor: '#34C759',
+  },
+  disableBtnText: {
+    color: '#FF3B30',
+    fontWeight: 'bold',
     fontSize: 14,
-    color: '#FF9F0A',
-    fontStyle: 'italic',
+  },
+  enableBtnText: {
+    color: '#34C759',
   },
   actionRow: {
     flexDirection: 'row',

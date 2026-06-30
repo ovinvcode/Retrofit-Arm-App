@@ -6,8 +6,10 @@ export type Device = {
   group?: string;
   switch_name: string;
   status: 'on' | 'off';
-  x_coord: number;
-  y_coord: number;
+  on_x: number;
+  on_y: number;
+  off_x: number;
+  off_y: number;
   z_coord: number;
 };
 
@@ -34,77 +36,82 @@ interface AppState {
   
   // WebSocket Connection State
   connectionStatus: 'disconnected' | 'connecting' | 'connected';
+  isHomed: boolean;
+  robotStatus: string;
   deviceIp: string;
+  devicePort: string;
   wsConnection: WebSocket | null;
-  connectToDevice: (ip: string) => void;
+  setDeviceIp: (ip: string) => void;
+  setDevicePort: (port: string) => void;
+  connectToDevice: (ip: string, port: string) => void;
   disconnectDevice: () => void;
   sendDeviceCommand: (command: object) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
   rooms: ['Bedroom', 'Living Room', 'Kitchen'],
-  currentRoom: 'Bedroom',
+  currentRoom: 'Living Room',
   devices: [
     {
       id: 'd1',
-      room: 'Bedroom',
-      group: 'Bedside switch',
-      switch_name: 'Fan',
+      room: 'Living Room',
+      group: 'Main Panel',
+      switch_name: '1 (Top Left)',
       status: 'off',
-      x_coord: 10,
-      y_coord: 20,
+      on_x: -22,
+      on_y: 27,
+      off_x: -22,
+      off_y: 17,
       z_coord: 5,
     },
     {
       id: 'd2',
-      room: 'Bedroom',
-      group: 'Bedside switch',
-      switch_name: 'Main light',
+      room: 'Living Room',
+      group: 'Main Panel',
+      switch_name: '2 (Top Right)',
       status: 'off',
-      x_coord: 30,
-      y_coord: 40,
+      on_x: 22,
+      on_y: 27,
+      off_x: 22,
+      off_y: 17,
       z_coord: 5,
     },
     {
       id: 'd3',
-      room: 'Bedroom',
-      group: 'Bedside switch',
-      switch_name: 'Bed side lamp',
+      room: 'Living Room',
+      group: 'Main Panel',
+      switch_name: '3 (Center)',
       status: 'off',
-      x_coord: 50,
-      y_coord: 60,
+      on_x: 0,
+      on_y: 5,
+      off_x: 0,
+      off_y: -5,
       z_coord: 5,
     },
     {
       id: 'd4',
-      room: 'Bedroom',
-      group: 'Bedside switch',
-      switch_name: 'AC',
+      room: 'Living Room',
+      group: 'Main Panel',
+      switch_name: '4 (Bottom Left)',
       status: 'off',
-      x_coord: 70,
-      y_coord: 80,
+      on_x: -22,
+      on_y: -17,
+      off_x: -22,
+      off_y: -27,
       z_coord: 5,
     },
     {
       id: 'd5',
       room: 'Living Room',
       group: 'Main Panel',
-      switch_name: 'Overhead Light',
+      switch_name: '5 (Bottom Right)',
       status: 'off',
-      x_coord: 10,
-      y_coord: 20,
+      on_x: 22,
+      on_y: -17,
+      off_x: 22,
+      off_y: -27,
       z_coord: 5,
-    },
-    {
-      id: 'd6',
-      room: 'Kitchen',
-      group: 'Main Panel',
-      switch_name: 'Sink Light',
-      status: 'off',
-      x_coord: 10,
-      y_coord: 20,
-      z_coord: 5,
-    },
+    }
   ],
   schedules: [
     {
@@ -130,37 +137,132 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   // WebSocket Connection Implementation
   connectionStatus: 'disconnected',
-  deviceIp: '192.168.4.1',
+  isHomed: false,
+  robotStatus: 'Idle',
+  deviceIp: '10.112.201.230',
+  devicePort: '80',
   wsConnection: null,
 
-  connectToDevice: (ip) => {
-    const ws = new WebSocket(`ws://${ip}:81`);
-    set({ connectionStatus: 'connecting', deviceIp: ip, wsConnection: ws });
+  setDeviceIp: (ip) => set({ deviceIp: ip }),
+  setDevicePort: (port) => set({ devicePort: port }),
+
+  connectToDevice: (ip, port) => {
+    const ws = new WebSocket(`ws://${ip}:${port}/ws`);
+    set({ connectionStatus: 'connecting', deviceIp: ip, devicePort: port, wsConnection: ws, robotStatus: 'Connecting...' });
 
     ws.onopen = () => {
-      set({ connectionStatus: 'connected' });
+      set({ connectionStatus: 'connected', robotStatus: 'Connected. Waiting for state...' });
       console.log('Connected to ESP32');
     };
 
     ws.onmessage = (e) => {
       console.log('Received: ', e.data);
+      try {
+        const data = JSON.parse(e.data);
+        if (!data || typeof data !== 'object') return;
+
+        const event = data.event || '';
+
+        switch (event) {
+          case 'connected':
+            set({ 
+              isHomed: !!data.homed, 
+              robotStatus: data.homed ? 'Ready' : 'Need Homing' 
+            });
+            if (data.sw_states && Array.isArray(data.sw_states)) {
+              const updated = get().devices.map((device) => {
+                const match = device.id.match(/^d(\d+)$/);
+                if (match) {
+                  const devIdx = parseInt(match[1], 10) - 1;
+                  if (devIdx >= 0 && devIdx < data.sw_states.length) {
+                    return { ...device, status: data.sw_states[devIdx] ? 'on' as const : 'off' as const };
+                  }
+                }
+                return device;
+              });
+              set({ devices: updated });
+            }
+            break;
+
+          case 'homing':
+            set({ robotStatus: 'Homing...' });
+            break;
+
+          case 'homed':
+            set({ isHomed: true, robotStatus: 'Homed / Ready' });
+            break;
+
+          case 'moving':
+            set({ robotStatus: `Moving to Switch ${data.sw}...` });
+            break;
+
+          case 'pressing':
+            set({ robotStatus: `Pressing Switch ${data.sw}...` });
+            break;
+
+          case 'returning':
+            set({ robotStatus: 'Returning to Rest...' });
+            break;
+
+          case 'done':
+            set({ robotStatus: 'Ready' });
+            if (data.sw) {
+              const devId = `d${data.sw}`;
+              get().updateDeviceStatus(devId, data.state ? 'on' : 'off');
+            }
+            break;
+
+          case 'status':
+            set({ isHomed: !!data.homed });
+            if (data.sw_states && Array.isArray(data.sw_states)) {
+              const updated = get().devices.map((device) => {
+                const match = device.id.match(/^d(\d+)$/);
+                if (match) {
+                  const devIdx = parseInt(match[1], 10) - 1;
+                  if (devIdx >= 0 && devIdx < data.sw_states.length) {
+                    return { ...device, status: data.sw_states[devIdx] ? 'on' as const : 'off' as const };
+                  }
+                }
+                return device;
+              });
+              set({ devices: updated });
+            }
+            break;
+
+          case 'pos':
+            set({ robotStatus: `Position: M1=${data.m1}, M2=${data.m2}` });
+            break;
+
+          case 'ok':
+            set({ robotStatus: data.msg || 'OK' });
+            break;
+
+          case 'error':
+            set({ robotStatus: `Error: ${data.msg || 'Unknown'}` });
+            break;
+
+          default:
+            console.log('Unhandled WebSocket event:', event);
+        }
+      } catch (err) {
+        console.error('Failed to parse WebSocket message JSON:', err);
+      }
     };
 
     ws.onclose = () => {
-      set({ connectionStatus: 'disconnected', wsConnection: null });
+      set({ connectionStatus: 'disconnected', wsConnection: null, isHomed: false, robotStatus: 'Disconnected' });
       console.log('Disconnected from ESP32');
     };
 
     ws.onerror = (e) => {
-      console.log('WebSocket Error: ', e.message);
-      set({ connectionStatus: 'disconnected', wsConnection: null });
+      console.log('WebSocket Error: ', e);
+      set({ connectionStatus: 'disconnected', wsConnection: null, isHomed: false, robotStatus: 'Connection Error' });
     };
   },
 
   disconnectDevice: () => {
     const { wsConnection, connectionStatus } = get();
     if (wsConnection && connectionStatus === 'connected') {
-      wsConnection.send(JSON.stringify({ command: 'SLEEP' }));
       wsConnection.close();
     }
   },
