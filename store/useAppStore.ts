@@ -139,7 +139,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   connectionStatus: 'disconnected',
   isHomed: false,
   robotStatus: 'Idle',
-  deviceIp: '10.112.201.230',
+  deviceIp: 'retroswitch.local',
   devicePort: '80',
   wsConnection: null,
 
