@@ -104,7 +104,7 @@
 #define MICROSTEPS      8       // Microsteps matching hardware MS config
 
 #define SGTHRS_DEFAULT  10      // StallGuard threshold (0-255) - tune after first test
-#define TCOOLTHRS       500     // StallGuard active below this speed
+#define TCOOLTHRS_VAL   500     // StallGuard active below this speed
 
 // Homing directions: +1 (clockwise) or -1 (counter-clockwise)
 // If motors home the wrong way, invert these values.
@@ -515,12 +515,12 @@ void setupDrivers() {
   driver1.begin(); driver1.toff(4); driver1.blank_time(24);
   driver1.rms_current(RMS_CURRENT); driver1.microsteps(MICROSTEPS);
   driver1.en_spreadCycle(false); driver1.pwm_autoscale(true);
-  driver1.TCOOLTHRS(TCOOLTHRS); driver1.SGTHRS(SGTHRS_DEFAULT);
+  driver1.TCOOLTHRS(TCOOLTHRS_VAL); driver1.SGTHRS(SGTHRS_DEFAULT);
 
   driver2.begin(); driver2.toff(4); driver2.blank_time(24);
   driver2.rms_current(RMS_CURRENT); driver2.microsteps(MICROSTEPS);
   driver2.en_spreadCycle(false); driver2.pwm_autoscale(true);
-  driver2.TCOOLTHRS(TCOOLTHRS); driver2.SGTHRS(SGTHRS_DEFAULT);
+  driver2.TCOOLTHRS(TCOOLTHRS_VAL); driver2.SGTHRS(SGTHRS_DEFAULT);
 
   Serial.println("[TMC] Drivers ready");
   Serial.printf("[TMC] Driver1 version: 0x%02X\n", driver1.version());
